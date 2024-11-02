@@ -12,7 +12,6 @@ from std_msgs.msg import ColorRGBA
 from rae_msgs.msg import LEDControl
 from geometry_msgs.msg import Twist
 from std_srvs.srv import Empty
-from time import sleep
 from cv_bridge import CvBridge # Package to convert between ROS and OpenCV Images
 import cv2 # OpenCV library
 

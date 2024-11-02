@@ -21,6 +21,7 @@ setup(
     entry_points={
         'console_scripts': [
         'edge_detector = lab1.edge_detector:main',
+        'line_follower = lab1.line_follower:main',
         ],
     },
 )

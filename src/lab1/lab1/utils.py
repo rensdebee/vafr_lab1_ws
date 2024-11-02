@@ -7,7 +7,6 @@ import cv2
 import numpy as np
 import os
 import random
-from time import sleep
 
 class UTILS:
     def __init__(self, node):
