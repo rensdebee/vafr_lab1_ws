@@ -8,6 +8,7 @@ import numpy as np
 import cv2
 from cv_bridge import CvBridge
 from lab1.utils import UTILS
+import signal
 
 
 class LineFollower(Node):
@@ -30,17 +31,23 @@ class LineFollower(Node):
         self.image_subscriber
         self.image = None
 
+        # Set leds
+        self.utils.set_leds("#f2c40c", brightness=10)
+        self.utils.draw_text("Setting up..")
+        self.frame = 0
+
+        # Running line following on fixed timing
         self.timer = self.create_timer(
             timer_period_sec=0.06, callback=self.timer_callback
         )
 
+        # Publish movement commands
         self.publisher = self.create_publisher(
             Twist, "/cmd_vel", rclpy.qos.qos_profile_system_default
         )
 
-        self.utils.set_leds("#f2c40c", brightness=10)
-        self.utils.draw_text("Setting up..")
-        self.frame = 0
+        # On keyboard interrupt
+        signal.signal(signal.SIGINT, self.stop)
 
     def crop_size(self, height, width):
         """
@@ -192,7 +199,7 @@ class LineFollower(Node):
         line, rot_error = self.get_closest_line(lines)
 
         if line is not None:
-            self.utils.set_leds("#0000FF")
+            self.utils.set_leds("#00FF00")
             # < 0  IS RIGHT > 0 IS LEFT
             turn = rot_error * 0.5
 
@@ -208,6 +215,8 @@ class LineFollower(Node):
                 message.angular.z = turn
                 message.linear.x = 0.5
                 self.publisher.publish(message)
+            else:
+                self.publisher.publish(Twist())
 
             # Draw middle point of closest line
             cv2.circle(
@@ -225,9 +234,11 @@ class LineFollower(Node):
             # Draw number of lines detected to RAE screen
             self.utils.draw_text(f"{len(lines)} lines")
             if self.should_move:
-                message.angular.z = 0.5
-            empty_message = Twist()
-            self.publisher.publish(empty_message)
+                message = Twist()
+                message.angular.z = 1.0
+                self.publisher.publish(message)
+            else:
+                self.publisher.publish(Twist())
 
         # Draw box which has been cropped
         cv2.rectangle(
@@ -254,6 +265,14 @@ class LineFollower(Node):
 
         # TODO Define stop condition
 
+    def stop(self, signum=None, frame=None):
+        self.utils.set_leds("#ce10e3")
+        self.publisher.publish(Twist())
+        self.utils.draw_text(f"Shut down")
+        self.destroy_node()
+        rclpy.shutdown()
+        exit()
+
 
 def main(args=None):
 
@@ -263,16 +282,15 @@ def main(args=None):
     # Create the node
     line_follower = LineFollower()
 
-    # Spin the node so the callback function is called.
-    rclpy.spin(line_follower)
-
-    # Destroy the node explicitly
-    # (optional - otherwise it will be done automatically
-    # when the garbage collector destroys the node object)
-    line_follower.destroy_node()
-
-    # Shutdown the ROS client library for Python
-    rclpy.shutdown()
+    try:
+        # Spin the node to call callback functions
+        rclpy.spin(line_follower)
+    except KeyboardInterrupt:
+        line_follower.get_logger().info("Keyboard interrupt caught in main loop.")
+    finally:
+        # Ensure node is properly destroyed and stopped on shutdown
+        line_follower.destroy_node()
+        line_follower.stop()
 
 
 if __name__ == "__main__":
