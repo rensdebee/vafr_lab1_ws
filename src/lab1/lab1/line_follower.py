@@ -57,9 +57,9 @@ class LineFollower(Node):
             mask,
             rho=1,
             theta=np.pi / 180,
-            threshold=50,
-            minLineLength=90,
-            maxLineGap=5,
+            threshold=75,
+            minLineLength=40,
+            maxLineGap=1,
         )
 
         # Draw lines on original image
@@ -129,19 +129,25 @@ class LineFollower(Node):
             line = lines[i][0]
             line_center_w = crop_w_start + ((line[0] + line[2]) / 2)
             line_error = line_center_w - (self.width / 2)
-
-            if line_error < error:
-                error = line_error
-                min_i = i
-        if min_i:
-            line = lines[min_i][0]
             cv2.circle(
                 image,
-                (int(crop_w_start + ((line[0] + line[2]) / 2)), 0),
+                (int(line_center_w), 0),
                 5,
-                (0, 255, 0),
+                (255, 255, 0),
                 7,
             )
+            cv2.circle(
+                image,
+                (int(self.width / 2), 0),
+                5,
+                (0, 255, 255),
+                7,
+            )
+            if np.abs(line_error) < error:
+                error = np.abs(line_error)
+                min_i = i
+        if min_i is not None:
+            line = lines[min_i][0]
             # Draw middle point of closest line
             cv2.circle(
                 image,
@@ -149,7 +155,7 @@ class LineFollower(Node):
                     int(crop_w_start + (line[0] + line[2]) / 2),
                     int(crop_h_start + (line[1] + line[3]) / 2),
                 ),
-                5,
+                10,
                 (0, 255, 0),
                 7,
             )
