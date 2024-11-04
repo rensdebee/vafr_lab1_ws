@@ -3,3 +3,6 @@ install/
 log/
 git/
 rae-ros/
+test.py
+*.zip
+*.png
