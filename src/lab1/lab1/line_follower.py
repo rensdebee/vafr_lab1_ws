@@ -10,12 +10,13 @@ from cv_bridge import CvBridge
 from lab1.utils import UTILS
 from lab1.calibrate import undistort_from_saved_data
 import signal
+import math
 
 
 class LineFollower(Node):
     def __init__(self):
         # Set instructions
-        self.should_move = False
+        self.should_move = True
         self.display_gray = False
         self.turn_speed = 0.5
         self.forward_speed = 0.2
@@ -149,6 +150,27 @@ class LineFollower(Node):
     def point_distance(self, p1, p2):
         return np.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)
 
+    def distance_point_to_line(self, line_start, line_end, focus_point):
+        x1, y1 = line_start
+        x2, y2 = line_end
+        x0, y0 = focus_point
+        # Calculate the direction vector AB
+        dx, dy = x2 - x1, y2 - y1
+
+        # If A and B are the same point, we can't define a line, so return the distance PA
+        if dx == 0 and dy == 0:
+            return math.sqrt((x0 - x1) ** 2 + (y0 - y1) ** 2)
+
+        # Calculate the projection scalar t for the point P on line AB
+        t = ((x0 - x1) * dx + (y0 - y1) * dy) / (dx**2 + dy**2)
+
+        # Find the coordinates of the projection point Q on the line
+        qx, qy = x1 + t * dx, y1 + t * dy
+
+        # Calculate the distance between P and Q
+        distance = math.sqrt((qx - x0) ** 2 + (qy - y0) ** 2)
+        return distance
+
     def get_closest_line(
         self,
         lines,
@@ -169,8 +191,10 @@ class LineFollower(Node):
             line_error_h = self.h_focus - line_center_h
 
             # Penalize height error more
-            abs_total_error = np.abs(line_error_w) + 2 * np.abs(line_error_h)
-
+            # abs_total_error = np.abs(line_error_w) + 2 * np.abs(line_error_h)
+            abs_total_error = self.distance_point_to_line(
+                line[0], line[1], line[2], line[3], self.w_focus, self.h_focus
+            )
             # Get line with lowest error
             if abs_total_error < abs_error:
                 abs_error = abs_total_error
