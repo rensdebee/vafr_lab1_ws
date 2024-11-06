@@ -100,8 +100,9 @@ if __name__ == "__main__":
     undistort_img(cam_mat, dist_coeffs[0])
     # undistort_from_saved_data("calibration_data.npz")
 
-    # TODO Test
-    # cam_mat = np.array([[282.36844,   0.     , 301.68807],
-    #                     [0.     , 282.55274, 197.14123],
-    #                     [0.     ,   0.     ,   1.]])
-    # dist_coeffs = np.array([-0.276752, 0.058219, 0.000643, -0.000852, 0.000000])
+    # Camera intrinsic matrix and distortion coefficients from the ros algorithm.
+    # cam_mat = np.array([[311.71773,   0.     , 307.39619],
+    #                     [0.     , 313.31956, 191.23788],
+    #                     [0.     ,   0.     ,   1.     ]])
+    # dist_coeffs = np.array([-0.244207, 0.043980, 0.000955, -0.000878, 0.000000])
+    # undistort_img(cam_mat, dist_coeffs[0])  
