@@ -16,6 +16,8 @@ class LineFollower(Node):
         # Set instructions
         self.should_move = False
         self.display_gray = False
+        self.turn_speed = 0.2
+        self.forward_speed = 0.2
 
         # Init node
         super().__init__("line_follower")
@@ -49,30 +51,39 @@ class LineFollower(Node):
         # On keyboard interrupt
         signal.signal(signal.SIGINT, self.stop)
 
-    def crop_size(self, height, width):
+    def crop_size(self, image):
         """
         Get the measures to crop the image
         Output:
         (Height_upper_boundary, Height_lower_boundary,
         Width_left_boundary, Width_right_boundary)
         """
-        # Set region to crop (Only save start as this is need to calculate offset)
-        self.crop_h_start, crop_h_stop, self.crop_w_start, crop_w_stop = (
-            0,
-            height,
-            180,
-            360,
-        )
-        # Define region center
-        self.crop_h_center = self.crop_h_start + (crop_h_stop - self.crop_h_start) / 2
-        self.crop_w_center = self.crop_w_start + (crop_w_stop - self.crop_w_start) / 2
-        assert self.crop_w_center >= 0
-        assert self.crop_h_center >= 0
-        # Define point to focus on for error
-        self.w_focus = self.crop_w_center
-        self.h_focus = self.crop_h_center - 100
+        height = image.shape[0]
+        width = image.shape[1]
 
-        return self.crop_h_start, crop_h_stop, self.crop_w_start, crop_w_stop
+        # Step 1: Define the points for the triangle (adjust coordinates as needed)
+        triangle_up_left = (0, 0)
+        triangle_up_right = (width, 0)
+        triangle_down = (width // 2, height)
+        self.triangle = np.array(
+            [[triangle_up_left, triangle_up_right, triangle_down]],
+            dtype=np.int32,
+        )
+
+        # Step 2: Create a mask with the same size as the image, initially filled with 0 (black)
+        mask = np.zeros_like(image)
+
+        # Fill the triangular area on the mask with white (255)
+        cv2.fillPoly(mask, self.triangle, 255)
+
+        # Step 3: Apply the mask to get the triangular ROI
+        triangular_roi = cv2.bitwise_and(image, mask)
+
+        # Define point to focus on for error
+        self.w_focus = triangle_up_right[0] - triangle_up_left[0]
+        self.h_focus = triangle_up_right[1] - triangle_up_left[1] - 100
+
+        return triangular_roi
 
     def get_lines(self, mask, out):
         """
@@ -87,7 +98,7 @@ class LineFollower(Node):
             mask,
             rho=1,
             theta=np.pi / 180,
-            threshold=300,
+            threshold=200,
             minLineLength=80,
             maxLineGap=150,
         )
@@ -149,8 +160,8 @@ class LineFollower(Node):
 
         for i in range(0, len(lines)):
             line = lines[i][0]
-            line_center_w = self.crop_w_start + ((line[0] + line[2]) / 2)
-            line_center_h = self.crop_h_start + ((line[1] + line[3]) / 2)
+            line_center_w = (line[0] + line[2]) / 2
+            line_center_h = (line[1] + line[3]) / 2
 
             line_error_w = self.w_focus - line_center_w
             line_error_h = self.h_focus - line_center_h
@@ -177,43 +188,39 @@ class LineFollower(Node):
         image = self.image.copy()
         # cv2.imwrite(f"./imgs/frame_{self.frame}.png", image)
         self.frame += 1
-        self.height = image.shape[0]
-        self.width = image.shape[1]
         # Edge detection
-        mask, binary = self.edge_detector(image)
+        edges_dilated, binary_image = self.edge_detector(image)
 
         # Display binary image
         if self.display_gray:
-            image = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+            image = cv2.cvtColor(binary_image, cv2.COLOR_GRAY2BGR)
 
         # Crop only top part to detect lines from
-        crop_h_start, crop_h_stop, crop_w_start, crop_w_stop = self.crop_size(
-            self.height, self.width
-        )
-        crop = mask[crop_h_start:crop_h_stop, crop_w_start:crop_w_stop]
+        triangular_roi = self.crop_size(edges_dilated.copy())
 
         # Get lines using hough and draw on image crop
-        lines = self.get_lines(
-            crop, image[crop_h_start:crop_h_stop, crop_w_start:crop_w_stop]
-        )
+        lines = self.get_lines(triangular_roi, image)
         line, rot_error = self.get_closest_line(lines)
 
         if line is not None:
             self.utils.set_leds("#00FF00")
             # < 0  IS RIGHT > 0 IS LEFT
-            turn = rot_error * 0.5
+            # TODO base turning on error with posible clip
+            turn = rot_error
 
             if turn < 0:
                 self.utils.draw_text("Going Right")
                 print("Right")
+                turn = -1 * self.turn_speed
             else:
                 self.utils.draw_text("Going Left")
+                turn = self.turn_speed
                 print("Left")
 
             if self.should_move:
                 message = Twist()
                 message.angular.z = turn
-                message.linear.x = 0.5
+                message.linear.x = self.forward_speed
                 self.publisher.publish(message)
             else:
                 self.publisher.publish(Twist())
@@ -222,8 +229,8 @@ class LineFollower(Node):
             cv2.circle(
                 image,
                 (
-                    int(crop_w_start + (line[0] + line[2]) / 2),
-                    int(crop_h_start + (line[1] + line[3]) / 2),
+                    int((line[0] + line[2]) / 2),
+                    int((line[1] + line[3]) / 2),
                 ),
                 10,
                 (0, 255, 0),
@@ -235,18 +242,14 @@ class LineFollower(Node):
             self.utils.draw_text(f"{len(lines)} lines")
             if self.should_move:
                 message = Twist()
-                message.angular.z = 1.0
+                message.angular.z = self.turn_speed
                 self.publisher.publish(message)
             else:
                 self.publisher.publish(Twist())
 
         # Draw box which has been cropped
-        cv2.rectangle(
-            image,
-            (crop_w_start, crop_h_start),
-            (crop_w_stop, crop_h_stop),
-            (255, 0, 0),
-            2,
+        cv2.polylines(
+            image, self.triangle, isClosed=True, color=(255, 0, 0), thickness=2
         )
 
         # Draw point used for error calculation
