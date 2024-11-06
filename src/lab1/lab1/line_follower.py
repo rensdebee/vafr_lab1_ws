@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CompressedImage
 from geometry_msgs.msg import Twist
 from std_srvs.srv import Empty
 
@@ -8,6 +8,7 @@ import numpy as np
 import cv2
 from cv_bridge import CvBridge
 from lab1.utils import UTILS
+from lab1.calibrate import undistort_from_saved_data
 import signal
 
 
@@ -16,7 +17,7 @@ class LineFollower(Node):
         # Set instructions
         self.should_move = False
         self.display_gray = False
-        self.turn_speed = 0.2
+        self.turn_speed = 0.5
         self.forward_speed = 0.2
 
         # Init node
@@ -27,14 +28,17 @@ class LineFollower(Node):
 
         # Init recieving image from rae
         self.br = CvBridge()
+        # self.image_subscriber = self.create_subscription(
+        #     Image, "/rae/right/image_raw", self.image_callback, 10
+        # )
         self.image_subscriber = self.create_subscription(
-            Image, "/rae/right/image_raw", self.image_callback, 10
+            CompressedImage, "/rae/right/image_raw/compressed", self.image_callback, 10
         )
         self.image_subscriber
         self.image = None
 
         # Set leds
-        self.utils.set_leds("#f2c40c", brightness=10)
+        self.utils.set_leds("#f2c40c")
         self.utils.draw_text("Setting up..")
         self.frame = 0
 
@@ -61,10 +65,11 @@ class LineFollower(Node):
         height = image.shape[0]
         width = image.shape[1]
 
-        # Step 1: Define the points for the triangle (adjust coordinates as needed)
-        triangle_up_left = (0, 0)
-        triangle_up_right = (width, 0)
-        triangle_down = (width // 2, height)
+        # Step 1: Define the points for the triangle
+        # order must be kept otherwise downstream will break
+        triangle_up_left = (0 + 100, 0)
+        triangle_up_right = (width - 100, 0)
+        triangle_down = (width // 2, height - 80)
         self.triangle = np.array(
             [[triangle_up_left, triangle_up_right, triangle_down]],
             dtype=np.int32,
@@ -80,8 +85,8 @@ class LineFollower(Node):
         triangular_roi = cv2.bitwise_and(image, mask)
 
         # Define point to focus on for error
-        self.w_focus = triangle_up_right[0] - triangle_up_left[0]
-        self.h_focus = triangle_up_right[1] - triangle_up_left[1] - 100
+        self.w_focus = (triangle_up_right[0] + triangle_up_left[0]) // 2
+        self.h_focus = ((triangle_up_right[1] + triangle_up_left[1]) // 2) + 100
 
         return triangular_roi
 
@@ -99,8 +104,8 @@ class LineFollower(Node):
             rho=1,
             theta=np.pi / 180,
             threshold=200,
-            minLineLength=80,
-            maxLineGap=150,
+            minLineLength=125,
+            maxLineGap=50,
         )
 
         # Draw lines on original image
@@ -115,27 +120,18 @@ class LineFollower(Node):
 
     def image_callback(self, data):
         # Convert ROS Image message to OpenCV image
-        current_frame = self.br.imgmsg_to_cv2(data)
-        # TODO Read from file
-        mtx = np.array(
-            [
-                [311.717726, 0.000000, 307.396186],
-                [0.000000, 313.319557, 191.237882],
-                [0.000000, 0.000000, 1.000000],
-            ]
+        current_frame = self.br.compressed_imgmsg_to_cv2(data)
+        # Undistort image using found calibration
+        self.image = undistort_from_saved_data(
+            "./src/lab1/lab1/calibration_data.npz", current_frame
         )
-        dist = np.array([-0.244207, 0.043980, 0.000955, -0.000878, 0.000000])
-        h = current_frame.shape[0]
-        w = current_frame.shape[1]
-        newcameramtx, roi = cv2.getOptimalNewCameraMatrix(mtx, dist, (w, h), 0, (w, h))
-        self.image = cv2.undistort(current_frame, mtx, dist, None, newcameramtx)
 
     def edge_detector(self, current_frame):
         # Convert the image to grayscale
         current_frame = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
 
         # Apply a threshold to binarize the image (only keep bright areas)
-        _, binary = cv2.threshold(current_frame, 200, 255, cv2.THRESH_BINARY)
+        _, binary = cv2.threshold(current_frame, 240, 255, cv2.THRESH_BINARY)
 
         # TODO Maybe import this from edge_detector.py with a command line argument to do different methods
         # Setting parameter values
@@ -144,10 +140,14 @@ class LineFollower(Node):
         # Applying the Canny Edge filter
         canny = cv2.Canny(binary, t_lower, t_upper)
 
-        # Dilate the edges to make it easier for Hough transform
+        # Dilate the edges to help for hough transform
         kernel = np.ones((10, 10), np.uint8)
         edges_dilated = cv2.dilate(canny, kernel)
+
         return edges_dilated, binary
+
+    def point_distance(self, p1, p2):
+        return np.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)
 
     def get_closest_line(
         self,
@@ -158,16 +158,20 @@ class LineFollower(Node):
         rot_error = None
         min_i = None
 
+        # Calculate line which center is clossst to our focus point
         for i in range(0, len(lines)):
             line = lines[i][0]
             line_center_w = (line[0] + line[2]) / 2
             line_center_h = (line[1] + line[3]) / 2
 
+            # Width and Height error
             line_error_w = self.w_focus - line_center_w
             line_error_h = self.h_focus - line_center_h
 
+            # Penalize height error more
             abs_total_error = np.abs(line_error_w) + 2 * np.abs(line_error_h)
 
+            # Get line with lowest error
             if abs_total_error < abs_error:
                 abs_error = abs_total_error
                 rot_error = line_error_w
@@ -175,9 +179,30 @@ class LineFollower(Node):
 
         # Return line with lowest error and width error
         if min_i is not None:
-            return lines[min_i][0], rot_error
+            # Get line with lowest error
+            line = lines[min_i][0]
+            # Get start and end point of line
+            p_1 = (line[0], line[1])
+            p_2 = (line[2], line[3])
+
+            # Lower part of triangle
+            distant_point = (self.triangle[0][2][0], self.triangle[0][2][1])
+
+            # Distance between start, end point of line and lower part of triangle
+            dist_1 = self.point_distance(distant_point, p_1)
+            dist_2 = self.point_distance(distant_point, p_2)
+
+            # Set followpoint to end point of line which is closest to lower part of triangle
+            if dist_1 < dist_2:
+                follow_point = p_1
+            else:
+                follow_point = p_2
+
+            # Calculate direction to turn based on difference between width error of focus point and point to follow
+            rot_error = self.w_focus - follow_point[0]
+            return lines[min_i][0], rot_error, follow_point
         else:
-            return None, None
+            return None, None, None
 
     def timer_callback(self):
         # Wait for the first image to be received
@@ -195,26 +220,27 @@ class LineFollower(Node):
         if self.display_gray:
             image = cv2.cvtColor(binary_image, cv2.COLOR_GRAY2BGR)
 
-        # Crop only top part to detect lines from
+        # Crop only triangular part to detect lines from
         triangular_roi = self.crop_size(edges_dilated.copy())
 
         # Get lines using hough and draw on image crop
         lines = self.get_lines(triangular_roi, image)
-        line, rot_error = self.get_closest_line(lines)
+
+        # Draw number of lines detected to RAE screen
+        self.utils.draw_text(f"{len(lines)} lines")
+        line, rot_error, follow_point = self.get_closest_line(lines)
 
         if line is not None:
-            self.utils.set_leds("#00FF00")
             # < 0  IS RIGHT > 0 IS LEFT
-            # TODO base turning on error with posible clip
             turn = rot_error
 
             if turn < 0:
-                self.utils.draw_text("Going Right")
+                self.utils.set_leds("#00FF00")
                 print("Right")
                 turn = -1 * self.turn_speed
             else:
-                self.utils.draw_text("Going Left")
-                turn = self.turn_speed
+                self.utils.set_leds("#FF0000")
+                turn = 1 * self.turn_speed
                 print("Left")
 
             if self.should_move:
@@ -236,10 +262,19 @@ class LineFollower(Node):
                 (0, 255, 0),
                 7,
             )
+            # Draw Follow point
+            cv2.circle(
+                image,
+                (
+                    int(follow_point[0]),
+                    int(follow_point[1]),
+                ),
+                10,
+                (255, 255, 0),
+                7,
+            )
         else:
-            self.utils.set_leds("#FF0000")
-            # Draw number of lines detected to RAE screen
-            self.utils.draw_text(f"{len(lines)} lines")
+            self.utils.set_leds("#f2c40c")
             if self.should_move:
                 message = Twist()
                 message.angular.z = self.turn_speed
@@ -265,8 +300,6 @@ class LineFollower(Node):
         cv2.imshow("output", image)
         # Print the image for 5milis, then resume execution
         cv2.waitKey(5)
-
-        # TODO Define stop condition
 
     def stop(self, signum=None, frame=None):
         self.utils.set_leds("#ce10e3")
