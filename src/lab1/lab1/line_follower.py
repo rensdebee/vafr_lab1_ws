@@ -16,7 +16,7 @@ import math
 class LineFollower(Node):
     def __init__(self):
         # Set instructions
-        self.should_move = True
+        self.should_move = False
         self.display_gray = False
         self.turn_speed = 0.5
         self.forward_speed = 0.2
