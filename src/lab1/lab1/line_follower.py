@@ -15,9 +15,22 @@ import math
 
 class LineFollower(Node):
     def __init__(self):
-        # Set instructions
-        self.should_move = False
+        # Send move instructions
+        self.should_move = True
+
+        # Choose which image to use as an underground
         self.display_gray = False
+        self.display_canny = False
+        self.display_dilated_canny = False
+
+        # Diferent pipeline options
+        self.undistort = True
+        self.binarize = True
+        self.dilate = True
+        self.roi = True
+        self.choose_line = True
+
+        # Movement speeds
         self.turn_speed = 0.5
         self.forward_speed = 0.2
 
@@ -56,6 +69,16 @@ class LineFollower(Node):
         # On keyboard interrupt
         signal.signal(signal.SIGINT, self.stop)
 
+    def image_callback(self, data):
+        # Convert ROS Image message to OpenCV image
+        current_frame = self.br.compressed_imgmsg_to_cv2(data)
+        # Undistort image using found calibration
+        self.image = current_frame
+        if self.undistort:
+            self.image = undistort_from_saved_data(
+                "./src/lab1/lab1/calibration_data.npz", current_frame
+            )
+        
     def crop_size(self, image):
         """
         Get the measures to crop the image
@@ -90,7 +113,32 @@ class LineFollower(Node):
         self.h_focus = ((triangle_up_right[1] + triangle_up_left[1]) // 2) + 100
 
         return triangular_roi
+    
+    def edge_detector(self, current_frame):
+        # Convert the image to grayscale
+        current_frame = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
 
+        
+        # Apply a threshold to binarize the image (only keep bright areas)
+        binary = current_frame
+        if self.binarize
+            _, binary = cv2.threshold(current_frame, 240, 255, cv2.THRESH_BINARY)
+
+        # TODO Maybe import this from edge_detector.py with a command line argument to do different methods
+        # Setting parameter values
+        t_lower = 50  # Lower Threshold
+        t_upper = 150  # Upper threshold
+        # Applying the Canny Edge filter
+        canny = cv2.Canny(binary, t_lower, t_upper)
+
+        # Dilate the edges to help for hough transform
+        edges_dilated = canny
+        if self.dilate:
+            kernel = np.ones((10, 10), np.uint8)
+            edges_dilated = cv2.dilate(canny, kernel)
+
+        return edges_dilated, binary, canny
+    
     def get_lines(self, mask, out):
         """
         Detect lines using hough transform
@@ -118,34 +166,6 @@ class LineFollower(Node):
             linesP = []
 
         return linesP
-
-    def image_callback(self, data):
-        # Convert ROS Image message to OpenCV image
-        current_frame = self.br.compressed_imgmsg_to_cv2(data)
-        # Undistort image using found calibration
-        self.image = undistort_from_saved_data(
-            "./src/lab1/lab1/calibration_data.npz", current_frame
-        )
-
-    def edge_detector(self, current_frame):
-        # Convert the image to grayscale
-        current_frame = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
-
-        # Apply a threshold to binarize the image (only keep bright areas)
-        _, binary = cv2.threshold(current_frame, 240, 255, cv2.THRESH_BINARY)
-
-        # TODO Maybe import this from edge_detector.py with a command line argument to do different methods
-        # Setting parameter values
-        t_lower = 50  # Lower Threshold
-        t_upper = 150  # Upper threshold
-        # Applying the Canny Edge filter
-        canny = cv2.Canny(binary, t_lower, t_upper)
-
-        # Dilate the edges to help for hough transform
-        kernel = np.ones((10, 10), np.uint8)
-        edges_dilated = cv2.dilate(canny, kernel)
-
-        return edges_dilated, binary
 
     def point_distance(self, p1, p2):
         return np.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)
@@ -193,7 +213,7 @@ class LineFollower(Node):
             # Penalize height error more
             # abs_total_error = np.abs(line_error_w) + 2 * np.abs(line_error_h)
             abs_total_error = self.distance_point_to_line(
-                line[0], line[1], line[2], line[3], self.w_focus, self.h_focus
+                (line[0], line[1]), (line[2], line[3]), (self.w_focus, self.h_focus)
             )
             # Get line with lowest error
             if abs_total_error < abs_error:
@@ -238,14 +258,20 @@ class LineFollower(Node):
         # cv2.imwrite(f"./imgs/frame_{self.frame}.png", image)
         self.frame += 1
         # Edge detection
-        edges_dilated, binary_image = self.edge_detector(image)
+        edges_dilated, binary_image, canny = self.edge_detector(image)
 
         # Display binary image
         if self.display_gray:
             image = cv2.cvtColor(binary_image, cv2.COLOR_GRAY2BGR)
+        elif self.display_canny:
+            image = cv2.cvtColor(canny, cv2.COLOR_GRAY2BGR)
+        elif self.display_dilated_canny:
+            image = cv2.cvtColor(edges_dilated, cv2.COLOR_GRAY2BGR)
 
         # Crop only triangular part to detect lines from
-        triangular_roi = self.crop_size(edges_dilated.copy())
+        triangular_roi = edges_dilated
+        if self.roi:
+            triangular_roi = self.crop_size(edges_dilated.copy())
 
         # Get lines using hough and draw on image crop
         lines = self.get_lines(triangular_roi, image)
@@ -254,7 +280,7 @@ class LineFollower(Node):
         self.utils.draw_text(f"{len(lines)} lines")
         line, rot_error, follow_point = self.get_closest_line(lines)
 
-        if line is not None:
+        if line is not None and self.choose_line:
             # < 0  IS RIGHT > 0 IS LEFT
             turn = rot_error
 
@@ -275,16 +301,13 @@ class LineFollower(Node):
             else:
                 self.publisher.publish(Twist())
 
-            # Draw middle point of closest line
-            cv2.circle(
+            # Draw closest line in green
+            cv2.line(
                 image,
-                (
-                    int((line[0] + line[2]) / 2),
-                    int((line[1] + line[3]) / 2),
-                ),
-                10,
+                (line[0], line[1]),
+                (line[2], line[3]),
                 (0, 255, 0),
-                7,
+                5,
             )
             # Draw Follow point
             cv2.circle(
@@ -307,18 +330,20 @@ class LineFollower(Node):
                 self.publisher.publish(Twist())
 
         # Draw box which has been cropped
-        cv2.polylines(
-            image, self.triangle, isClosed=True, color=(255, 0, 0), thickness=2
-        )
+        if self.roi:
+            cv2.polylines(
+                image, self.triangle, isClosed=True, color=(255, 0, 0), thickness=2
+            )
 
         # Draw point used for error calculation
-        cv2.circle(
-            image,
-            (int(self.w_focus), int(self.h_focus)),
-            5,
-            (0, 255, 255),
-            7,
-        )
+        if self.choose_line:
+            cv2.circle(
+                image,
+                (int(self.w_focus), int(self.h_focus)),
+                5,
+                (0, 255, 255),
+                7,
+            )
 
         # Show the output image to the user
         cv2.imshow("output", image)
