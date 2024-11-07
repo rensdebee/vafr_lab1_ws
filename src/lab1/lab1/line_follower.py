@@ -22,6 +22,7 @@ class LineFollower(Node):
         self.display_gray = False
         self.display_canny = False
         self.display_dilated_canny = False
+        self.save_frames = False
 
         # Diferent pipeline options
         self.undistort = True
@@ -349,6 +350,9 @@ class LineFollower(Node):
         cv2.imshow("output", image)
         # Print the image for 5milis, then resume execution
         cv2.waitKey(5)
+        if self.frame % 60 == 0:
+            cv2.imwrite(f"./frame_{self.frame}",image)
+        self.frame += 1
 
     def stop(self, signum=None, frame=None):
         self.utils.set_leds("#ce10e3")
