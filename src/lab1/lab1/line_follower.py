@@ -16,16 +16,20 @@ import math
 class LineFollower(Node):
     def __init__(self):
         # Send move instructions
-        self.should_move = True
+        self.should_move = False
 
         # Choose which image to use as an underground
         self.display_gray = False
         self.display_canny = False
         self.display_dilated_canny = False
+        self.display_roi = False
+
+        # Save each 60 frames
         self.save_frames = False
+        self.save_raw = True
 
         # Diferent pipeline options
-        self.undistort = True
+        self.undistort = False
         self.binarize = True
         self.dilate = True
         self.roi = True
@@ -79,7 +83,7 @@ class LineFollower(Node):
             self.image = undistort_from_saved_data(
                 "./src/lab1/lab1/calibration_data.npz", current_frame
             )
-        
+
     def crop_size(self, image):
         """
         Get the measures to crop the image
@@ -112,18 +116,20 @@ class LineFollower(Node):
         # Define point to focus on for error
         self.w_focus = (triangle_up_right[0] + triangle_up_left[0]) // 2
         self.h_focus = ((triangle_up_right[1] + triangle_up_left[1]) // 2) + 100
+        if not self.roi:
+            triangular_roi = image
 
         return triangular_roi
-    
+
     def edge_detector(self, current_frame):
         # Convert the image to grayscale
         current_frame = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
 
-        
         # Apply a threshold to binarize the image (only keep bright areas)
         binary = current_frame
-        if self.binarize
+        if self.binarize:
             _, binary = cv2.threshold(current_frame, 240, 255, cv2.THRESH_BINARY)
+            binary = cv2.bitwise_and(current_frame, binary)
 
         # TODO Maybe import this from edge_detector.py with a command line argument to do different methods
         # Setting parameter values
@@ -135,11 +141,11 @@ class LineFollower(Node):
         # Dilate the edges to help for hough transform
         edges_dilated = canny
         if self.dilate:
-            kernel = np.ones((10, 10), np.uint8)
+            kernel = np.ones((15, 15), np.uint8)
             edges_dilated = cv2.dilate(canny, kernel)
 
         return edges_dilated, binary, canny
-    
+
     def get_lines(self, mask, out):
         """
         Detect lines using hough transform
@@ -153,9 +159,9 @@ class LineFollower(Node):
             mask,
             rho=1,
             theta=np.pi / 180,
-            threshold=200,
-            minLineLength=125,
-            maxLineGap=50,
+            threshold=175,
+            minLineLength=100,
+            maxLineGap=150,
         )
 
         # Draw lines on original image
@@ -256,12 +262,13 @@ class LineFollower(Node):
 
         # Get image stats
         image = self.image.copy()
+        raw_image = self.image.copy()
         # cv2.imwrite(f"./imgs/frame_{self.frame}.png", image)
         self.frame += 1
         # Edge detection
         edges_dilated, binary_image, canny = self.edge_detector(image)
 
-        # Display binary image
+        # Choose image to display
         if self.display_gray:
             image = cv2.cvtColor(binary_image, cv2.COLOR_GRAY2BGR)
         elif self.display_canny:
@@ -270,16 +277,17 @@ class LineFollower(Node):
             image = cv2.cvtColor(edges_dilated, cv2.COLOR_GRAY2BGR)
 
         # Crop only triangular part to detect lines from
-        triangular_roi = edges_dilated
-        if self.roi:
-            triangular_roi = self.crop_size(edges_dilated.copy())
+        triangular_roi = self.crop_size(edges_dilated.copy())
+        if self.display_roi:
+            image = cv2.cvtColor(triangular_roi, cv2.COLOR_GRAY2BGR)
 
         # Get lines using hough and draw on image crop
         lines = self.get_lines(triangular_roi, image)
 
         # Draw number of lines detected to RAE screen
         self.utils.draw_text(f"{len(lines)} lines")
-        line, rot_error, follow_point = self.get_closest_line(lines)
+        if self.get_closest_line:
+            line, rot_error, follow_point = self.get_closest_line(lines)
 
         if line is not None and self.choose_line:
             # < 0  IS RIGHT > 0 IS LEFT
@@ -325,7 +333,7 @@ class LineFollower(Node):
             self.utils.set_leds("#f2c40c")
             if self.should_move:
                 message = Twist()
-                message.angular.z = self.turn_speed
+                message.angular.z = self.turn_speed * 5
                 self.publisher.publish(message)
             else:
                 self.publisher.publish(Twist())
@@ -345,14 +353,18 @@ class LineFollower(Node):
                 (0, 255, 255),
                 7,
             )
+        if self.frame % 60 == 1 and (self.save_frames or self.save_raw):
+            print(f"Saving frame {self.frame}")
+            if self.save_raw:
+                cv2.imwrite(f"./frame_{raw_image}.png", image)
+            else:
+                cv2.imwrite(f"./frame_{self.frame}.png", image)
+        self.frame += 1
 
         # Show the output image to the user
         cv2.imshow("output", image)
         # Print the image for 5milis, then resume execution
         cv2.waitKey(5)
-        if self.frame % 60 == 0:
-            cv2.imwrite(f"./frame_{self.frame}",image)
-        self.frame += 1
 
     def stop(self, signum=None, frame=None):
         self.utils.set_leds("#ce10e3")
