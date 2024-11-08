@@ -29,7 +29,7 @@ class LineFollower(Node):
         self.save_raw = True
 
         # Diferent pipeline options
-        self.undistort = False
+        self.undistort = True
         self.binarize = True
         self.dilate = True
         self.roi = True
@@ -356,7 +356,7 @@ class LineFollower(Node):
         if self.frame % 60 == 1 and (self.save_frames or self.save_raw):
             print(f"Saving frame {self.frame}")
             if self.save_raw:
-                cv2.imwrite(f"./frame_{raw_image}.png", image)
+                cv2.imwrite(f"./frame_{self.frame}.png", raw_image)
             else:
                 cv2.imwrite(f"./frame_{self.frame}.png", image)
         self.frame += 1
